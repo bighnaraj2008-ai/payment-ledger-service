@@ -8,3 +8,12 @@ CREATE TABLE accounts (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_accounts_currency CHECK (currency ~ '^[A-Z]{3}$')
 );
+
+CREATE TABLE transactions (
+    id UUID PRIMARY KEY,
+    idempotency_key VARCHAR(255) NOT NULL,
+    description VARCHAR(500),
+    status VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_transactions_idempotency_key UNIQUE (idempotency_key)
+);
