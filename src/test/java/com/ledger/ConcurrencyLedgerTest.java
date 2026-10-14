@@ -189,8 +189,56 @@ public class ConcurrencyLedgerTest extends BaseIntegrationTest {
         assertThat(idempotentReplays.get()).as("All duplicate requests must be recognized as idempotent replays")
                 .isEqualTo(duplicateInjections);
 
-        log.info("CONCURRENCY TEST COMPLETED");
+        // 4. INVARIANT 1: Total system money across all accounts is strictly conserved (Zero-Sum Variance)
+        BigDecimal actualTotalSystemMoney = BigDecimal.ZERO;
+        log.info("--- AUDIT: ACCOUNT BALANCE BREAKDOWN ---");
+        for (int i = 0; i < accountIds.size(); i++) {
+            UUID accId = accountIds.get(i);
+            Account account = accountRepository.findById(accId).orElseThrow();
+            BigDecimal calculatedLedgerSum = accountRepository.calculateNetLedgerSum(accId);
+
+            log.info("Account #{}: ID={}, Balance={}, Net Ledger Sum={}, Version={}",
+                    i, accId, account.getBalance(), calculatedLedgerSum, account.getVersion());
+
+            actualTotalSystemMoney = actualTotalSystemMoney.add(account.getBalance());
+
+            // 5. INVARIANT 2: Every account's balance column matches exact SUM() of its ledger_entries rows
+            assertThat(account.getBalance())
+                    .as("Account " + accId + " cached balance must match calculated ledger sum")
+                    .isEqualByComparingTo(calculatedLedgerSum);
+
+            Boolean reconciled = accountRepository.isBalanceReconciled(accId);
+            assertThat(reconciled).as("Account " + accId + " must be marked reconciled by DB query").isTrue();
+        }
+
+        log.info("System Initial Pool: {}, Final System Pool: {}, Variance: {}",
+                expectedTotalSystemMoney, actualTotalSystemMoney, actualTotalSystemMoney.subtract(expectedTotalSystemMoney));
+
+        assertThat(actualTotalSystemMoney)
+                .as("Total system money must be strictly conserved down to 0.0001 precision")
+                .isEqualByComparingTo(expectedTotalSystemMoney);
+
+        // 6. INVARIANT 3: Immutability and Idempotency Invariant
+        long finalTxCount = transactionRepository.count();
+        long finalEntriesCount = ledgerEntryRepository.count();
+
+        long newTransactions = finalTxCount - baselineTxCount;
+        long newLedgerEntries = finalEntriesCount - baselineEntriesCount;
+
+        log.info("New Transactions Created: {} (Expected: {})", newTransactions, totalTransfers);
+        log.info("New Ledger Entries Created: {} (Expected: {})", newLedgerEntries, totalTransfers * 2);
+
+        assertThat(newTransactions).as("Exactly 1,000 transaction headers must be created").isEqualTo(totalTransfers);
+        assertThat(newLedgerEntries).as("Exactly 2,000 ledger entries must be created (2 per transfer)").isEqualTo(totalTransfers * 2);
+
+        // 7. Post-test duplicate replay validation: verify re-sending known keys continues to yield 0 new rows
+        TransferRequest sample = requests.get(0);
+        TransferResponse replayResponse = ledgerService.transfer(sample);
+        assertThat(replayResponse.isIdempotentReplay()).isTrue();
+        assertThat(ledgerEntryRepository.count()).isEqualTo(finalEntriesCount);
+
+        log.info("==========================================================================");
+        log.info("CONCURRENCY PROOF PASSED: ZERO BALANCE DRIFT VERIFIED!");
         log.info("==========================================================================");
     }
 }
-
