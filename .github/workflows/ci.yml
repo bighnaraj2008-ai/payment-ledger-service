@@ -23,4 +23,5 @@ jobs:
           cache: maven
 
       - name: Build and verify with Maven
-        run: ./mvnw clean verify -B
+        run: mvn clean verify -B
+
