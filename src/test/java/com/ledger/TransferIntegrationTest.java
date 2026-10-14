@@ -89,7 +89,56 @@ public class TransferIntegrationTest extends BaseIntegrationTest {
         assertThat(credit.getAccount().getId()).isEqualTo(accountB);
     }
 
-    @Test\n    @DisplayName("Should reject transfer when source account has insufficient funds")
+    @Test
+    @DisplayName("Should be idempotent when replaying transfer with same idempotency key")
+    void shouldBeIdempotentWhenReplayingSameIdempotencyKey() {
+        UUID accountA = createTestAccount("Merchant A", "USD", new BigDecimal("500.0000"));
+        UUID accountB = createTestAccount("Merchant B", "USD", new BigDecimal("100.0000"));
+
+        String idempotencyKey = "idemp-replay-test-" + UUID.randomUUID();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+
+        TransferRequest transferRequest = TransferRequest.builder()
+                .sourceAccountId(accountA)
+                .destinationAccountId(accountB)
+                .amount(new BigDecimal("75.0000"))
+                .currency("USD")
+                .description("Subscription charge")
+                .build();
+
+        HttpEntity<TransferRequest> entity = new HttpEntity<>(transferRequest, headers);
+
+        // First execution
+        ResponseEntity<TransferResponse> firstResponse = restTemplate.exchange(
+                "/api/v1/transfers", HttpMethod.POST, entity, TransferResponse.class);
+
+        assertThat(firstResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(firstResponse.getBody().isIdempotentReplay()).isFalse();
+        UUID txId = firstResponse.getBody().getTransactionId();
+
+        // Duplicate replay with identical header
+        ResponseEntity<TransferResponse> secondResponse = restTemplate.exchange(
+                "/api/v1/transfers", HttpMethod.POST, entity, TransferResponse.class);
+
+        assertThat(secondResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(secondResponse.getBody()).isNotNull();
+        assertThat(secondResponse.getBody().getTransactionId()).isEqualTo(txId);
+        assertThat(secondResponse.getBody().isIdempotentReplay()).isTrue();
+
+        // Verify balances modified only once ($500 - $75 = $425, $100 + $75 = $175)
+        AccountResponse fetchedA = restTemplate.getForObject("/api/v1/accounts/" + accountA, AccountResponse.class);
+        AccountResponse fetchedB = restTemplate.getForObject("/api/v1/accounts/" + accountB, AccountResponse.class);
+        assertThat(fetchedA.getBalance()).isEqualByComparingTo(new BigDecimal("425.0000"));
+        assertThat(fetchedB.getBalance()).isEqualByComparingTo(new BigDecimal("175.0000"));
+
+        // Exactly 2 ledger entries exist for this transaction
+        assertThat(ledgerEntryRepository.countByTransactionId(txId)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("Should reject transfer when source account has insufficient funds")
     void shouldRejectTransferWhenInsufficientFunds() {
         UUID accountA = createTestAccount("Low Balance", "USD", new BigDecimal("25.0000"));
         UUID accountB = createTestAccount("Beneficiary", "USD", new BigDecimal("0.0000"));
@@ -195,4 +244,3 @@ public class TransferIntegrationTest extends BaseIntegrationTest {
         return response.getBody().getId();
     }
 }
-
